@@ -1,300 +1,434 @@
-import os
-import re
-from typing import Iterable, Optional
-
+import streamlit as st
 import pandas as pd
 import plotly.express as px
-import streamlit as st
+import os
+import glob
+
+# --------------------------------------------------
+# PAGE CONFIGURATION
+# --------------------------------------------------
+
+st.set_page_config(
+    page_title="Smart Retail Customer & Sales Analysis",
+    page_icon="🛍️",
+    layout="wide"
+)
+
+# --------------------------------------------------
+# TITLE
+# --------------------------------------------------
+
+st.title("🛍️ Smart Retail Customer and Sales Analysis")
+st.markdown(
+    "### Data Analysis and Visualization using Python"
+)
+
+st.divider()
+
+# --------------------------------------------------
+# LOAD DATASET
+# --------------------------------------------------
 
 DATA_FOLDER = "dataset"
 
+csv_files = glob.glob(os.path.join(DATA_FOLDER, "*.csv"))
 
-def normalize_column_name(column_name):
-    if column_name is None:
-        return "column"
-    text = str(column_name).strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    return text or "column"
+if len(csv_files) == 0:
+    st.error("❌ No CSV file found inside the dataset folder.")
+    st.info("Please place your ecommerce CSV file inside the 'dataset' folder.")
+    st.stop()
 
+# Load first CSV file
+file_path = csv_files[0]
 
-def choose_dataset_file(data_folder: str):
-    if not os.path.isdir(data_folder):
-        return None
+try:
+    df = pd.read_csv(file_path)
+except Exception as e:
+    st.error(f"Error loading dataset: {e}")
+    st.stop()
 
-    csv_files = sorted(
-        os.path.join(data_folder, file_name)
-        for file_name in os.listdir(data_folder)
-        if file_name.lower().endswith(".csv")
-    )
-    if not csv_files:
-        return None
+# --------------------------------------------------
+# DATASET INFORMATION
+# --------------------------------------------------
 
-    preferred_order = [
-        "sales",
-        "orders",
-        "customer",
-        "retail",
-        "ecommerce",
-        "data",
-    ]
+st.sidebar.header("📊 Dataset Information")
 
-    def score(path):
-        name = os.path.basename(path).lower()
-        for idx, keyword in enumerate(preferred_order):
-            if keyword in name:
-                return idx
-        return len(preferred_order)
+st.sidebar.write("File:")
+st.sidebar.write(os.path.basename(file_path))
 
-    return min(csv_files, key=score)
+st.sidebar.write("Rows:")
+st.sidebar.write(df.shape[0])
 
+st.sidebar.write("Columns:")
+st.sidebar.write(df.shape[1])
 
-def find_matching_column(columns: Iterable[str], aliases):
-    normalized = {normalize_column_name(column): column for column in columns}
-    alias_set = {normalize_column_name(alias) for alias in aliases}
+# --------------------------------------------------
+# CLEAN COLUMN NAMES
+# --------------------------------------------------
 
-    for alias in alias_set:
-        if alias in normalized:
-            return normalized[alias]
+df.columns = (
+    df.columns
+    .str.strip()
+    .str.lower()
+    .str.replace(" ", "_")
+)
 
-    for column in columns:
-        normalized_name = normalize_column_name(column)
-        for alias in aliases:
-            if normalize_column_name(alias) in normalized_name:
-                return column
-    return None
+# --------------------------------------------------
+# SIDEBAR FILTERS
+# --------------------------------------------------
 
+st.sidebar.header("🔎 Filters")
 
-def is_categorical_like(series: pd.Series) -> bool:
-    if pd.api.types.is_numeric_dtype(series):
-        unique_count = series.dropna().nunique()
-        return unique_count <= 50 and unique_count < len(series.dropna()) * 0.9
-    return True
+# Find categorical columns
+categorical_columns = df.select_dtypes(
+    include=["object", "category"]
+).columns.tolist()
 
+selected_filters = {}
 
-def get_sales_column(columns):
-    sales_aliases = [
-        "sales",
-        "sale",
-        "revenue",
-        "amount",
-        "total_sales",
-        "total_amount",
-        "price",
-        "item_price",
-        "net_sales",
-        "total_price",
-        "total_revenue",
-    ]
-    return find_matching_column(columns, sales_aliases)
+for column in categorical_columns[:5]:
 
+    unique_values = df[column].dropna().unique()
 
-def get_customer_column(columns):
-    customer_aliases = [
-        "customer_id",
-        "customerid",
-        "customer",
-        "customer_name",
-        "user_id",
-        "buyer_id",
-        "customer_identifier",
-    ]
-    return find_matching_column(columns, customer_aliases)
+    if len(unique_values) <= 50:
 
-
-def get_category_column(columns):
-    category_aliases = [
-        "category",
-        "product_category",
-        "product_category_name",
-        "department",
-        "segment",
-        "product_name",
-        "item_category",
-    ]
-    return find_matching_column(columns, category_aliases)
-
-
-def build_filters(df: pd.DataFrame):
-    selected_filters = {}
-    candidate_columns = [
-        column
-        for column in df.columns
-        if is_categorical_like(df[column]) and df[column].dropna().nunique() <= 50
-    ]
-
-    for column in candidate_columns[:5]:
-        unique_values = df[column].dropna().astype(str).unique()
         selected_values = st.sidebar.multiselect(
             column.replace("_", " ").title(),
-            sorted(unique_values),
+            sorted(unique_values.astype(str))
         )
+
         if selected_values:
             selected_filters[column] = selected_values
-    return selected_filters
 
+# Apply filters
+filtered_df = df.copy()
 
-def build_dashboard(df: pd.DataFrame):
-    st.sidebar.header("📊 Dataset Information")
-    st.sidebar.write("File:")
-    st.sidebar.write(os.path.basename(df.attrs.get("source_file", "dataset.csv")))
-    st.sidebar.write("Rows:")
-    st.sidebar.write(df.shape[0])
-    st.sidebar.write("Columns:")
-    st.sidebar.write(df.shape[1])
+for column, values in selected_filters.items():
 
-    st.sidebar.header("🔎 Filters")
-    selected_filters = build_filters(df)
+    filtered_df = filtered_df[
+        filtered_df[column].astype(str).isin(values)
+    ]
 
-    filtered_df = df.copy()
-    for column, values in selected_filters.items():
-        filtered_df = filtered_df[filtered_df[column].astype(str).isin(values)]
+# --------------------------------------------------
+# KPI SECTION
+# --------------------------------------------------
 
-    st.subheader("📌 Key Performance Indicators")
-    col1, col2, col3, col4 = st.columns(4)
+st.subheader("📌 Key Performance Indicators")
 
-    with col1:
-        st.metric("Total Records", f"{len(filtered_df):,}")
+col1, col2, col3, col4 = st.columns(4)
 
-    sales_column = get_sales_column(filtered_df.columns)
-    if sales_column:
-        numeric_sales = pd.to_numeric(filtered_df[sales_column], errors="coerce")
-        filtered_df[sales_column] = numeric_sales
-        with col2:
-            st.metric("Total Sales", f"{numeric_sales.sum():,.2f}")
-        with col3:
-            st.metric("Average Sales", f"{numeric_sales.mean():,.2f}")
-    else:
-        with col2:
-            st.metric("Total Sales", "N/A")
-        with col3:
-            st.metric("Average Sales", "N/A")
+with col1:
+    st.metric(
+        "Total Records",
+        f"{len(filtered_df):,}"
+    )
 
-    customer_column = get_customer_column(filtered_df.columns)
-    if customer_column:
-        with col4:
-            st.metric("Unique Customers", f"{filtered_df[customer_column].nunique():,}")
-    else:
-        with col4:
-            st.metric("Unique Customers", "N/A")
+# Find possible sales/revenue columns
+sales_candidates = [
+    "sales",
+    "sale",
+    "revenue",
+    "amount",
+    "total_sales",
+    "total_amount",
+    "price"
+]
 
-    st.divider()
-    st.subheader("📋 Dataset Preview")
-    st.dataframe(filtered_df.head(10), use_container_width=True)
-    st.divider()
+sales_column = None
 
-    st.subheader("📊 Dataset Summary")
-    summary_col1, summary_col2 = st.columns(2)
-    with summary_col1:
-        st.write("**Dataset Shape**")
-        st.write(f"Rows: {filtered_df.shape[0]}")
-        st.write(f"Columns: {filtered_df.shape[1]}")
+for column in sales_candidates:
+    if column in filtered_df.columns:
+        sales_column = column
+        break
 
-    with summary_col2:
-        st.write("**Missing Values**")
-        missing_values = filtered_df.isnull().sum().sort_values(ascending=False)
-        st.dataframe(missing_values.head(10), use_container_width=True)
+if sales_column:
 
-    st.divider()
+    filtered_df[sales_column] = pd.to_numeric(
+        filtered_df[sales_column],
+        errors="coerce"
+    )
 
-    if sales_column:
-        st.subheader("💰 Sales Analysis")
-        sales_col1, sales_col2 = st.columns(2)
+    total_sales = filtered_df[sales_column].sum()
 
-        with sales_col1:
-            hist = px.histogram(filtered_df, x=sales_column, title="Sales Distribution", nbins=30)
-            st.plotly_chart(hist, use_container_width=True)
-
-        with sales_col2:
-            box = px.box(filtered_df, y=sales_column, title="Sales Value Distribution")
-            st.plotly_chart(box, use_container_width=True)
-
-    category_column = get_category_column(filtered_df.columns)
-    if category_column and sales_column:
-        st.subheader("🛒 Category-wise Sales")
-        category_sales = (
-            filtered_df.groupby(category_column, dropna=False)[sales_column]
-            .sum()
-            .reset_index()
-            .sort_values(sales_column, ascending=False)
+    with col2:
+        st.metric(
+            "Total Sales",
+            f"{total_sales:,.2f}"
         )
-        category_chart = px.bar(
-            category_sales.head(15),
-            x=category_column,
+
+    with col3:
+        st.metric(
+            "Average Sales",
+            f"{filtered_df[sales_column].mean():,.2f}"
+        )
+
+else:
+
+    with col2:
+        st.metric("Total Sales", "N/A")
+
+    with col3:
+        st.metric("Average Sales", "N/A")
+
+# Customer column detection
+customer_candidates = [
+    "customer_id",
+    "customerid",
+    "customer",
+    "customer_name",
+    "user_id"
+]
+
+customer_column = None
+
+for column in customer_candidates:
+    if column in filtered_df.columns:
+        customer_column = column
+        break
+
+if customer_column:
+
+    customers = filtered_df[customer_column].nunique()
+
+    with col4:
+        st.metric(
+            "Unique Customers",
+            f"{customers:,}"
+        )
+
+else:
+
+    with col4:
+        st.metric(
+            "Unique Customers",
+            "N/A"
+        )
+
+st.divider()
+
+# --------------------------------------------------
+# DATASET PREVIEW
+# --------------------------------------------------
+
+st.subheader("📋 Dataset Preview")
+
+st.dataframe(
+    filtered_df.head(10),
+    use_container_width=True
+)
+
+st.divider()
+
+# --------------------------------------------------
+# DATASET SUMMARY
+# --------------------------------------------------
+
+st.subheader("📊 Dataset Summary")
+
+summary_col1, summary_col2 = st.columns(2)
+
+with summary_col1:
+
+    st.write("**Dataset Shape**")
+
+    st.write(
+        f"Rows: {filtered_df.shape[0]}"
+    )
+
+    st.write(
+        f"Columns: {filtered_df.shape[1]}"
+    )
+
+with summary_col2:
+
+    st.write("**Missing Values**")
+
+    missing_values = (
+        filtered_df.isnull()
+        .sum()
+        .sort_values(ascending=False)
+    )
+
+    st.dataframe(
+        missing_values.head(10),
+        use_container_width=True
+    )
+
+st.divider()
+
+# --------------------------------------------------
+# SALES ANALYSIS
+# --------------------------------------------------
+
+if sales_column:
+
+    st.subheader("💰 Sales Analysis")
+
+    sales_col1, sales_col2 = st.columns(2)
+
+    # Histogram
+    with sales_col1:
+
+        fig = px.histogram(
+            filtered_df,
+            x=sales_column,
+            title="Sales Distribution",
+            nbins=30
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+
+    # Box plot
+    with sales_col2:
+
+        fig = px.box(
+            filtered_df,
             y=sales_column,
-            title="Top Categories by Sales",
+            title="Sales Value Distribution"
         )
-        st.plotly_chart(category_chart, use_container_width=True)
 
-    if customer_column:
-        st.subheader("👥 Customer Analysis")
-        customer_frequency = (
-            filtered_df.groupby(customer_column, dropna=False)
-            .size()
-            .reset_index(name="orders")
-            .sort_values("orders", ascending=False)
+        st.plotly_chart(
+            fig,
+            use_container_width=True
         )
-        customer_chart = px.bar(
-            customer_frequency.head(10),
-            x=customer_column,
-            y="orders",
-            title="Top Customers by Number of Orders",
+
+# --------------------------------------------------
+# CATEGORY ANALYSIS
+# --------------------------------------------------
+
+category_candidates = [
+    "category",
+    "product_category",
+    "product_category_name",
+    "department",
+    "segment"
+]
+
+category_column = None
+
+for column in category_candidates:
+
+    if column in filtered_df.columns:
+
+        category_column = column
+        break
+
+if category_column and sales_column:
+
+    st.subheader("🛒 Category-wise Sales")
+
+    category_sales = (
+        filtered_df
+        .groupby(category_column)[sales_column]
+        .sum()
+        .reset_index()
+        .sort_values(
+            sales_column,
+            ascending=False
         )
-        st.plotly_chart(customer_chart, use_container_width=True)
-
-    numeric_columns = filtered_df.select_dtypes(include=["number"]).columns.tolist()
-    if len(numeric_columns) >= 2:
-        st.subheader("📈 Numerical Data Analysis")
-        correlation = filtered_df[numeric_columns].corr()
-        corr_chart = px.imshow(correlation, text_auto=True, title="Correlation Heatmap")
-        st.plotly_chart(corr_chart, use_container_width=True)
-
-    st.divider()
-    st.subheader("📁 Complete Dataset")
-    st.dataframe(filtered_df, use_container_width=True, height=400)
-
-    st.divider()
-    st.markdown(
-        """
-        **Smart Retail Customer and Sales Analysis**
-
-        Developed using:
-        - Python
-        - Pandas
-        - Plotly
-        - Streamlit
-
-        **B.Tech Data Science Project**
-        """
     )
 
-
-def main():
-    st.set_page_config(
-        page_title="Smart Retail Customer & Sales Analysis",
-        page_icon="🛍️",
-        layout="wide",
+    fig = px.bar(
+        category_sales.head(15),
+        x=category_column,
+        y=sales_column,
+        title="Top Categories by Sales"
     )
-    st.title("🛍️ Smart Retail Customer and Sales Analysis")
-    st.markdown("### Data Analysis and Visualization using Python")
-    st.divider()
 
-    dataset_path = choose_dataset_file(DATA_FOLDER)
-    if dataset_path is None:
-        st.error("❌ No CSV file found inside the dataset folder.")
-        st.info("Please place your ecommerce CSV file inside the 'dataset' folder.")
-        return
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
 
-    try:
-        df = pd.read_csv(dataset_path)
-    except Exception as exc:
-        st.error(f"Error loading dataset: {exc}")
-        return
+# --------------------------------------------------
+# CUSTOMER ANALYSIS
+# --------------------------------------------------
 
-    df.attrs["source_file"] = os.path.basename(dataset_path)
-    df.columns = [normalize_column_name(column) for column in df.columns]
-    build_dashboard(df)
+if customer_column:
 
+    st.subheader("👥 Customer Analysis")
 
-if __name__ == "__main__":
-    main()
+    customer_frequency = (
+        filtered_df
+        .groupby(customer_column)
+        .size()
+        .reset_index(name="orders")
+        .sort_values(
+            "orders",
+            ascending=False
+        )
+    )
+
+    fig = px.bar(
+        customer_frequency.head(10),
+        x=customer_column,
+        y="orders",
+        title="Top Customers by Number of Orders"
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
+# --------------------------------------------------
+# NUMERICAL CORRELATION
+# --------------------------------------------------
+
+numeric_columns = filtered_df.select_dtypes(
+    include=["number"]
+).columns.tolist()
+
+if len(numeric_columns) >= 2:
+
+    st.subheader("📈 Numerical Data Analysis")
+
+    correlation = filtered_df[numeric_columns].corr()
+
+    fig = px.imshow(
+        correlation,
+        text_auto=True,
+        title="Correlation Heatmap"
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
+# --------------------------------------------------
+# RAW DATA
+# --------------------------------------------------
+
+st.divider()
+
+st.subheader("📁 Complete Dataset")
+
+st.dataframe(
+    filtered_df,
+    use_container_width=True,
+    height=400
+)
+
+# --------------------------------------------------
+# FOOTER
+# --------------------------------------------------
+
+st.divider()
+
+st.markdown(
+    """
+    **Smart Retail Customer and Sales Analysis**
+
+    Developed using:
+    - Python
+    - Pandas
+    - Plotly
+    - Streamlit
+
+    **B.Tech Data Science Project**
+    """
+)
